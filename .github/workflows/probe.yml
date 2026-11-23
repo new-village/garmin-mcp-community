@@ -14,7 +14,7 @@ env:
   WIF_SERVICE_ACCOUNT: garmin-deployer@kuro-intelligence.iam.gserviceaccount.com
 
 jobs:
-  probe-v2-deploy:
+  probe-api-versions:
     runs-on: ubuntu-latest
     steps:
       - name: Authenticate to Google Cloud (Workload Identity Federation)
@@ -23,11 +23,22 @@ jobs:
           workload_identity_provider: ${{ env.WIF_PROVIDER }}
           service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
 
-      - name: Deploy hello image via deploy-cloudrun action (Admin API v2)
-        uses: google-github-actions/deploy-cloudrun@v2
-        with:
-          service: deploy-probe-api2
-          image: us-docker.pkg.dev/cloudrun/container/hello
-          region: asia-northeast1
-          project_id: kuro-intelligence
-          flags: --allow-unauthenticated
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: A - v1 API read (gcloud run services list)
+        continue-on-error: true
+        run: |
+          gcloud run services list --region "$GCP_REGION" --project "$GCP_PROJECT_ID"
+
+      - name: B - v2 API read (REST list services)
+        continue-on-error: true
+        run: |
+          TOKEN=$(gcloud auth print-access-token)
+          curl -s -w '\nHTTP:%{http_code}\n' -H "Authorization: Bearer $TOKEN" "https://run.googleapis.com/v2/projects/kuro-intelligence/locations/asia-northeast1/services"
+
+      - name: C - v2 API write (REST create service)
+        continue-on-error: true
+        run: |
+          TOKEN=$(gcloud auth print-access-token)
+          curl -s -w '\nHTTP:%{http_code}\n' -X POST -H "Authorization: Bearer $TOKEN" -H "Content-Type: application/json" -d '{"template":{"containers":[{"image":"us-docker.pkg.dev/cloudrun/container/hello"}]}}' "https://run.googleapis.com/v2/projects/kuro-intelligence/locations/asia-northeast1/services?service_id=deploy-probe-v2"
