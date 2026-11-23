@@ -256,7 +256,11 @@ async def auth_submit(request: Request) -> HTMLResponse:
             _auth_message_html("Sign-in failed", exc.message),
             status_code=status,
         )
-    return HTMLResponse(_auth_success_html(token))
+    # The response body contains a reusable bearer token: it must never
+    # be stored by any cache (browser, proxy or CDN).
+    return HTMLResponse(
+        _auth_success_html(token), headers={"Cache-Control": "no-store"}
+    )
 
 
 @mcp.custom_route("/healthz", methods=["GET"])
@@ -292,6 +296,9 @@ class RefreshedTokenMiddleware:
             if message["type"] == "http.response.start" and holder.get("token"):
                 headers = MutableHeaders(scope=message)
                 headers["X-Garmin-Token"] = holder["token"]
+                # The response carries a reusable bearer token in a
+                # header: it must never be stored by any cache.
+                headers["Cache-Control"] = "no-store"
             await send(message)
 
         try:

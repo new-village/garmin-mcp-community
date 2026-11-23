@@ -144,6 +144,19 @@ def test_post_auth_success_shows_token_once(http_client, monkeypatch):
     assert PASSWORD not in resp.text
 
 
+def test_post_auth_success_has_cache_control_no_store(http_client, monkeypatch):
+    """The success page carries a reusable token: caches must not store it."""
+    monkeypatch.setattr(
+        server, "login_with_credentials", lambda email, password: "issued-token-123"
+    )
+    resp = http_client.post(
+        "/auth", data={"email": EMAIL, "password": PASSWORD}
+    )
+    assert resp.status_code == 200
+    assert "issued-token-123" in resp.text
+    assert resp.headers.get("cache-control") == "no-store"
+
+
 def test_post_auth_bad_credentials_generic_401(http_client, monkeypatch):
     def fail(email, password):
         raise AuthError("Garmin rejected the token (authentication failed).")
