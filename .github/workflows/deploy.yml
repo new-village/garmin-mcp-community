@@ -41,6 +41,7 @@ jobs:
             --source . \
             --project "$GCP_PROJECT_ID" \
             --region "$GCP_REGION" \
+            --service-account garmin-mcp-runtime@kuro-intelligence.iam.gserviceaccount.com \
             --allow-unauthenticated \
             --quiet
         # NOTE: --allow-unauthenticated is intentional: authentication is
