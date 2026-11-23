@@ -1,0 +1,49 @@
+name: Deploy to Cloud Run
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+# Keyless deployment via Workload Identity Federation (SPEC §5.6).
+# No service-account keys are stored in GitHub.
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  # --- Filled in after GCP-side setup -------------------------------------
+  GCP_PROJECT_ID: kuro-intelligence            # real project id
+  GCP_REGION: asia-northeast1                  # real region
+  SERVICE_NAME: garmin-mcp-community
+  WIF_PROVIDER: projects/699552476264/locations/global/workloadIdentityPools/github/providers/github
+  WIF_SERVICE_ACCOUNT: garmin-deployer@kuro-intelligence.iam.gserviceaccount.com
+  # -------------------------------------------------------------------------
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Build and deploy to Cloud Run
+        run: |
+          gcloud run deploy "$SERVICE_NAME" \
+            --source . \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --allow-unauthenticated \
+            --quiet
+        # NOTE: --allow-unauthenticated is intentional: authentication is
+        # per-request via the caller's own Garmin token (Authorization:
+        # Bearer), enforced by the application, not by Cloud Run IAM.
+        # The server stores no tokens or health data.
