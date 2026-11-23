@@ -8,7 +8,8 @@ discarded. No client, token or health data is cached across requests
 
 from __future__ import annotations
 
-from typing import Any
+import base64
+from typing import Any, Callable
 
 from garminconnect import (
     Garmin,
@@ -21,6 +22,7 @@ from garminconnect import (
 from .errors import (
     AuthError,
     GarminMcpError,
+    MfaRequiredError,
     NoDataError,
     RateLimitError,
     UpstreamError,
@@ -80,3 +82,48 @@ def create_request_client(token: str) -> RequestClient:
     except Exception as exc:  # garminconnect raises several auth flavours
         raise map_garmin_error(exc) from exc
     return RequestClient(garmin, token)
+
+
+def login_with_credentials(
+    email: str,
+    password: str,
+    garmin_factory: Callable[..., Any] = Garmin,
+) -> str:
+    """One-shot credential login for the /auth page (SPEC §5.1).
+
+    Performs a full Garmin login with the supplied credentials, in this
+    call only, and returns the issued token as base64-encoded garth JSON
+    — one of the forms accepted from clients (see
+    ``auth.normalize_token``). The credentials are used solely for this
+    login attempt: they are never stored, cached or logged here, and the
+    garminconnect client is discarded when this function returns.
+
+    TODO(MFA): two-step MFA completion is not implemented yet. With
+    ``return_on_mfa=True`` garminconnect reports ``"needs_mfa"`` instead
+    of prompting inline. Supporting it later means a second step that
+    resumes the flow with the returned client_state plus the user's MFA
+    code, while still holding no state server-side between the steps
+    (the client would carry the client_state). For now, accounts that
+    require MFA raise :class:`MfaRequiredError`.
+    """
+    garmin = garmin_factory(email=email, password=password, return_on_mfa=True)
+    try:
+        status, _client_state = garmin.login()
+    except Exception as exc:  # garminconnect raises several auth flavours
+        raise map_garmin_error(exc) from exc
+    if status == "needs_mfa":
+        raise MfaRequiredError(
+            "This Garmin account requires MFA (two-factor authentication), "
+            "which /auth does not support yet."
+        )
+    try:
+        token_json = garmin.client.dumps()
+    except Exception as exc:
+        raise UpstreamError(
+            "Garmin login succeeded but the session token could not be read."
+        ) from exc
+    if not isinstance(token_json, str) or not token_json:
+        raise UpstreamError(
+            "Garmin login succeeded but no session token was issued."
+        )
+    return base64.b64encode(token_json.encode("utf-8")).decode("ascii")

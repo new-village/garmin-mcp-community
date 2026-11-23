@@ -12,6 +12,7 @@ its stored copy. Tokens and health data are never logged.
 from __future__ import annotations
 
 import asyncio
+import html
 import os
 from collections.abc import Callable
 from typing import Any
@@ -24,7 +25,8 @@ from starlette.requests import Request
 from starlette.responses import HTMLResponse, JSONResponse
 
 from . import auth as auth_mod
-from .errors import GarminMcpError
+from .client import login_with_credentials
+from .errors import AuthError, GarminMcpError, MfaRequiredError
 from .service import GarminService
 
 mcp = FastMCP(
@@ -130,31 +132,47 @@ async def get_recovery_status(date: str) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
-# /auth stub and health check
-
+# /auth: one-shot Garmin login that issues a client-held token (SPEC §5.1).
+#
+# The server stays stateless: the submitted password is used only for the
+# login attempt made while handling that single POST, the issued token is
+# rendered exactly once in the response, and nothing — credentials, token,
+# session — is stored or logged server-side.
 
 _AUTH_HTML = """<!DOCTYPE html>
 <html lang="en">
 <head><meta charset="utf-8"><title>garmin-mcp-community — auth</title></head>
 <body>
-<h1>Garmin authentication (STUB — not yet implemented)</h1>
-<p><strong>Status:</strong> placeholder. The interactive Garmin login is
-implemented in a later pass, after a proof-of-concept with a real account.</p>
-<h2>Intended flow</h2>
-<ol>
-  <li>You open this page and sign in to Garmin Connect yourself
-      (including MFA, if enabled on your account).</li>
-  <li>On success, a Garmin session token is issued <em>once</em> and shown
-      to you / handed to your AI client. <strong>This server keeps
-      nothing</strong>: no token, no session, no health data is stored
-      or logged server-side.</li>
+<h1>Garmin authentication</h1>
+<p>Sign in with your Garmin Connect account to issue a session token for
+your AI client.</p>
+<h2>Before you sign in</h2>
+<ul>
+  <li>Your password is used <strong>only</strong> to perform this one
+      login attempt. It is <strong>never stored and never logged</strong>
+      by this server.</li>
+  <li>On success, your token is shown <strong>once</strong>, on the next
+      page. <strong>This server keeps nothing</strong>: no token, no
+      session, no health data is stored or logged server-side.</li>
   <li>Your AI client stores the token and sends it on every MCP request
       as <code>Authorization: Bearer &lt;token&gt;</code>. The server uses
       it only within that single request and discards it.</li>
   <li>If the token has expired, the server refreshes it during a request
       and returns the new token in the <code>X-Garmin-Token</code>
       response header; if refresh fails, re-authenticate here.</li>
-</ol>
+  <li>Accounts with MFA (two-factor authentication) enabled are
+      <strong>not supported yet</strong>.</li>
+</ul>
+<form method="post" action="/auth">
+  <p><label>Garmin email address<br>
+    <input type="email" name="email" required autocomplete="username">
+  </label></p>
+  <p><label>Garmin password<br>
+    <input type="password" name="password" required
+           autocomplete="current-password">
+  </label></p>
+  <p><button type="submit">Sign in to Garmin and issue token</button></p>
+</form>
 <p>This is an unofficial, community-maintained project and is not
 affiliated with Garmin.</p>
 </body>
@@ -162,10 +180,83 @@ affiliated with Garmin.</p>
 """
 
 
+def _auth_success_html(token: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>garmin-mcp-community — token issued</title></head>
+<body>
+<h1>Your Garmin token</h1>
+<p><strong>Copy it now — it is shown only this once.</strong> This server
+has not stored it anywhere; if you lose it, sign in again to issue a new
+one. Treat the token like a password.</p>
+<p><textarea readonly rows="6" cols="80">{html.escape(token)}</textarea></p>
+<p>Give the token to your AI client and have it send the token on every
+MCP request as <code>Authorization: Bearer &lt;token&gt;</code>.</p>
+</body>
+</html>
+"""
+
+
+def _auth_message_html(title: str, message: str) -> str:
+    return f"""<!DOCTYPE html>
+<html lang="en">
+<head><meta charset="utf-8"><title>garmin-mcp-community — auth</title></head>
+<body>
+<h1>{html.escape(title)}</h1>
+<p>{html.escape(message)}</p>
+<p><a href="/auth">Back to the sign-in form</a></p>
+</body>
+</html>
+"""
+
+
 @mcp.custom_route("/auth", methods=["GET"])
 async def auth_page(request: Request) -> HTMLResponse:
-    """STUB: explains the intended token issuance flow (SPEC §5.1)."""
+    """Sign-in form for the one-shot token issuance flow (SPEC §5.1)."""
     return HTMLResponse(_AUTH_HTML)
+
+
+@mcp.custom_route("/auth", methods=["POST"])
+async def auth_submit(request: Request) -> HTMLResponse:
+    """Log in to Garmin with the submitted credentials and show the token.
+
+    The credentials live only in this request: they are passed to the
+    login call and never stored or logged. Failure pages are generic and
+    never reflect the submitted credentials or exception details.
+    """
+    form = await request.form()
+    email = str(form.get("email") or "").strip()
+    password = str(form.get("password") or "")
+    if not email or not password:
+        return HTMLResponse(
+            _auth_message_html(
+                "Sign-in failed",
+                "Email and password are both required.",
+            ),
+            status_code=400,
+        )
+    try:
+        token = await asyncio.to_thread(login_with_credentials, email, password)
+    except MfaRequiredError as exc:
+        # TODO(MFA): once the two-step MFA flow lands (see
+        # client.login_with_credentials), this becomes a second form
+        # step asking for the MFA code instead of a dead end.
+        return HTMLResponse(_auth_message_html("MFA not supported", exc.message))
+    except AuthError:
+        return HTMLResponse(
+            _auth_message_html(
+                "Sign-in failed",
+                "Sign-in failed. Check your email and password and try again.",
+            ),
+            status_code=401,
+        )
+    except GarminMcpError as exc:
+        status = exc.status if exc.status in (429, 502, 503) else 502
+        return HTMLResponse(
+            _auth_message_html("Sign-in failed", exc.message),
+            status_code=status,
+        )
+    return HTMLResponse(_auth_success_html(token))
 
 
 @mcp.custom_route("/healthz", methods=["GET"])

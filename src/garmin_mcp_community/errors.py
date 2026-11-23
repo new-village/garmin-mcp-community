@@ -29,6 +29,12 @@ class AuthError(GarminMcpError):
     status = 401
 
 
+class MfaRequiredError(GarminMcpError):
+    """The Garmin account requires MFA, which /auth cannot complete yet."""
+
+    status = 401
+
+
 class NoDataError(GarminMcpError):
     """The requested day / activity has no data in Garmin Connect."""
 
