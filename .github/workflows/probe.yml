@@ -1,0 +1,36 @@
+name: Probe deploy paths
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+env:
+  GCP_PROJECT_ID: kuro-intelligence
+  GCP_REGION: asia-northeast1
+  WIF_PROVIDER: projects/699552476264/locations/global/workloadIdentityPools/github/providers/github
+  WIF_SERVICE_ACCOUNT: garmin-deployer@kuro-intelligence.iam.gserviceaccount.com
+
+jobs:
+  probe-image-deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Authenticate to Google Cloud (Workload Identity Federation)
+        uses: google-github-actions/auth@v2
+        with:
+          workload_identity_provider: ${{ env.WIF_PROVIDER }}
+          service_account: ${{ env.WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: google-github-actions/setup-gcloud@v2
+
+      - name: Deploy prebuilt hello image via gcloud
+        run: |
+          gcloud run deploy deploy-probe-api \
+            --image us-docker.pkg.dev/cloudrun/container/hello \
+            --project "$GCP_PROJECT_ID" \
+            --region "$GCP_REGION" \
+            --allow-unauthenticated \
+            --quiet
